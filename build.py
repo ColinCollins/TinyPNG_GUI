@@ -27,6 +27,10 @@ def build_exe():
         "--name=TinyPNG_GUI",  # 可执行文件名
         "--hidden-import=tinify",  # 显式包含 tinify 模块
         "--hidden-import=click",   # 显式包含 click 模块
+        "--hidden-import=certifi", # 显式包含 certifi 模块
+        "--hidden-import=requests", # 显式包含 requests 模块
+        "--hidden-import=urllib3", # 显式包含 urllib3 模块
+        "--collect-data=certifi",  # 收集 certifi 数据文件
         "main.py"
     ]
     

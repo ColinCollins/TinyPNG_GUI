@@ -21,7 +21,7 @@ class TinyPNGGUI:
         self.config = self.load_config()
         
         # 压缩器实例
-        self.compressor = TinyPNGCompressor()
+        self.compressor = TinyPNGCompressor(log_callback=self.log_message)
         
         # 压缩线程
         self.compress_thread = None
@@ -72,8 +72,19 @@ class TinyPNGGUI:
         self.api_key_entry = ttk.Entry(api_frame, textvariable=self.api_key_var, show="*", width=50)
         self.api_key_entry.grid(row=0, column=1, sticky=(tk.W, tk.E), padx=(0, 5))
         
+        # 绑定事件：当API Key改变时自动保存
+        self.api_key_var.trace('w', self.on_api_key_change)
+        
         # 测试按钮
         ttk.Button(api_frame, text="测试连接", command=self.test_api).grid(row=0, column=2)
+        
+        # 诊断按钮
+        ttk.Button(api_frame, text="诊断问题", command=self.diagnose_issues).grid(row=0, column=3, padx=(5, 0))
+        
+        # 显示/隐藏API Key按钮
+        self.show_api_key_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(api_frame, text="显示", variable=self.show_api_key_var, 
+                       command=self.toggle_api_key_visibility).grid(row=0, column=4, padx=(5, 0))
     
     def setup_mode_section(self, parent):
         """设置压缩模式区域"""
@@ -107,6 +118,17 @@ class TinyPNGGUI:
         # 选择按钮
         self.select_button = ttk.Button(file_frame, text="选择文件", command=self.select_file)
         self.select_button.grid(row=0, column=2)
+        
+        # 最近使用的路径下拉框
+        ttk.Label(file_frame, text="最近使用:").grid(row=1, column=0, sticky=tk.W, pady=(5, 0))
+        self.recent_paths_var = tk.StringVar()
+        self.recent_paths_combo = ttk.Combobox(file_frame, textvariable=self.recent_paths_var, 
+                                              state="readonly", width=50)
+        self.recent_paths_combo.grid(row=1, column=1, sticky=(tk.W, tk.E), padx=(0, 5), pady=(5, 0))
+        self.recent_paths_combo.bind('<<ComboboxSelected>>', self.on_recent_path_selected)
+        
+        # 清除缓存按钮
+        ttk.Button(file_frame, text="清除缓存", command=self.clear_cache).grid(row=1, column=2, pady=(5, 0))
     
     def setup_compress_section(self, parent):
         """设置压缩选项区域"""
@@ -122,6 +144,9 @@ class TinyPNGGUI:
         width_entry.grid(row=0, column=1, sticky=tk.W, padx=(0, 20))
         ttk.Label(compress_frame, text="(留空保持原尺寸)").grid(row=0, column=2, sticky=tk.W)
         
+        # 绑定宽度设置变化事件
+        self.width_var.trace('w', self.on_setting_change)
+        
         # 选项复选框
         self.replace_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(compress_frame, text="替换原文件", variable=self.replace_var).grid(row=1, column=0, sticky=tk.W, pady=(5, 0))
@@ -131,6 +156,11 @@ class TinyPNGGUI:
         
         self.auto_open_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(compress_frame, text="压缩后自动打开输出目录", variable=self.auto_open_var).grid(row=1, column=2, sticky=tk.W, pady=(5, 0))
+        
+        # 绑定变量变化事件，自动保存配置
+        self.replace_var.trace('w', self.on_setting_change)
+        self.ignore_meta_var.trace('w', self.on_setting_change)
+        self.auto_open_var.trace('w', self.on_setting_change)
     
     def setup_control_section(self, parent):
         """设置控制按钮区域"""
@@ -180,10 +210,12 @@ class TinyPNGGUI:
             )
             if filename:
                 self.path_var.set(filename)
+                self.add_recent_path(filename)
         else:
             dirname = filedialog.askdirectory(title="选择目录")
             if dirname:
                 self.path_var.set(dirname)
+                self.add_recent_path(dirname)
     
     def test_api(self):
         """测试 API 连接"""
@@ -192,8 +224,111 @@ class TinyPNGGUI:
             messagebox.showerror("错误", "请输入 API Key")
             return
         
-        # 这里可以添加实际的 API 测试逻辑
-        messagebox.showinfo("成功", "API Key 格式正确")
+        try:
+            # 设置 API Key
+            self.compressor.set_api_key(api_key)
+            
+            # 测试连接
+            success, message = self.compressor.test_api_connection()
+            
+            if success:
+                messagebox.showinfo("成功", f"API 连接测试成功！\n{message}")
+            else:
+                messagebox.showerror("连接失败", f"API 连接测试失败：\n{message}")
+                
+        except Exception as e:
+            messagebox.showerror("错误", f"测试过程中出现错误：\n{str(e)}")
+    
+    def diagnose_issues(self):
+        """诊断压缩问题"""
+        # 检查是否有选择的路径
+        path = self.path_var.get()
+        if not path:
+            messagebox.showwarning("警告", "请先选择一个文件或目录进行诊断")
+            return
+        
+        # 执行诊断
+        issues = self.compressor.diagnose_compression_issue(path)
+        
+        # 显示诊断结果
+        path_type = "目录" if os.path.isdir(path) else "文件" if os.path.isfile(path) else "路径"
+        result = f"诊断结果 ({path_type}): {path}\n\n" + "\n".join(issues)
+        
+        # 创建诊断结果窗口
+        dialog = tk.Toplevel(self.root)
+        dialog.title("压缩问题诊断")
+        dialog.geometry("600x500")
+        dialog.resizable(True, True)
+        
+        # 创建文本框显示结果
+        text_widget = scrolledtext.ScrolledText(dialog, wrap=tk.WORD, padx=10, pady=10)
+        text_widget.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        # 插入诊断结果
+        text_widget.insert(tk.END, result)
+        text_widget.config(state=tk.DISABLED)
+        
+        # 添加关闭按钮
+        ttk.Button(dialog, text="关闭", command=dialog.destroy).pack(pady=(0, 10))
+    
+    def on_api_key_change(self, *args):
+        """API Key 改变时的处理"""
+        # 自动保存配置
+        self.auto_save_config()
+    
+    def toggle_api_key_visibility(self):
+        """切换 API Key 显示/隐藏"""
+        if self.show_api_key_var.get():
+            self.api_key_entry.config(show="")
+        else:
+            self.api_key_entry.config(show="*")
+    
+    def add_recent_path(self, path):
+        """添加路径到最近使用列表"""
+        recent_paths = self.config.get("recent_paths", [])
+        max_paths = self.config.get("max_recent_paths", 10)
+        
+        # 如果路径已存在，先移除
+        if path in recent_paths:
+            recent_paths.remove(path)
+        
+        # 添加到开头
+        recent_paths.insert(0, path)
+        
+        # 限制数量
+        if len(recent_paths) > max_paths:
+            recent_paths = recent_paths[:max_paths]
+        
+        self.config["recent_paths"] = recent_paths
+        self.auto_save_config()
+        self.load_recent_paths()
+    
+    def load_recent_paths(self):
+        """加载最近使用的路径到下拉框"""
+        recent_paths = self.config.get("recent_paths", [])
+        self.recent_paths_combo['values'] = recent_paths
+    
+    def on_recent_path_selected(self, event):
+        """最近路径被选择时的处理"""
+        selected_path = self.recent_paths_var.get()
+        if selected_path and os.path.exists(selected_path):
+            self.path_var.set(selected_path)
+        else:
+            messagebox.showwarning("警告", "选择的路径不存在")
+    
+    def clear_cache(self):
+        """清除缓存"""
+        if messagebox.askyesno("确认", "确定要清除所有缓存吗？\n这将清除最近使用的路径记录。"):
+            self.config["recent_paths"] = []
+            self.auto_save_config()
+            self.load_recent_paths()
+            self.path_var.set("")
+            messagebox.showinfo("成功", "缓存已清除")
+    
+    def on_setting_change(self, *args):
+        """设置改变时的处理"""
+        # 自动保存配置
+        self.auto_save_config()
     
     def start_compress(self):
         """开始压缩"""
@@ -228,35 +363,33 @@ class TinyPNGGUI:
             # 获取参数
             mode = self.mode_var.get()
             path = self.path_var.get()
-            width = self.width_var.get().strip()
+            width_str = self.width_var.get().strip()
             replace = self.replace_var.get()
             
             # 设置宽度参数
-            if width:
-                try:
-                    width = int(width)
-                except ValueError:
-                    self.log_message("错误: 宽度必须是数字")
-                    return
-            else:
-                width = -1
+            try:
+                width = int(width_str) if width_str else -1
+            except ValueError:
+                self.log_message("错误: 宽度必须是数字")
+                return
             
             # 设置 API Key
             api_key = self.api_key_var.get().strip()
             self.compressor.set_api_key(api_key)
             
             # 执行压缩
-            if mode == "file":
-                self.compressor.compress_file(path, width, replace)
-            elif mode == "dir":
-                self.compressor.compress_path(path, width, replace)
-            elif mode == "recursive":
-                self.compressor.compress_path_recursive(path, width, replace)
+            compress_methods = {
+                "file": self.compressor.compress_file,
+                "dir": self.compressor.compress_path,
+                "recursive": self.compressor.compress_path_recursive
+            }
             
-            # 打印压缩统计信息
-            self.compressor.print_stats()
-            
-            self.log_message("压缩完成!")
+            if mode in compress_methods:
+                compress_methods[mode](path, width, replace)
+                self.compressor.print_stats()
+                self.log_message("压缩完成!")
+            else:
+                self.log_message(f"未知的压缩模式: {mode}")
             
         except Exception as e:
             self.log_message(f"压缩出错: {str(e)}")
@@ -300,7 +433,9 @@ class TinyPNGGUI:
             "width": "",
             "replace": False,
             "ignore_meta": True,
-            "auto_open": False
+            "auto_open": False,
+            "recent_paths": [],
+            "max_recent_paths": 10
         }
         
         if os.path.exists(self.config_file):
@@ -318,23 +453,45 @@ class TinyPNGGUI:
         self.replace_var.set(self.config.get("replace", False))
         self.ignore_meta_var.set(self.config.get("ignore_meta", True))
         self.auto_open_var.set(self.config.get("auto_open", False))
+        
+        # 加载最近使用的路径
+        self.load_recent_paths()
     
-    def save_config(self):
-        """保存配置"""
-        config = {
+    def _get_current_config(self):
+        """获取当前配置（内部方法）"""
+        return {
             "api_key": self.api_key_var.get(),
             "width": self.width_var.get(),
             "replace": self.replace_var.get(),
             "ignore_meta": self.ignore_meta_var.get(),
-            "auto_open": self.auto_open_var.get()
+            "auto_open": self.auto_open_var.get(),
+            "recent_paths": self.config.get("recent_paths", []),
+            "max_recent_paths": self.config.get("max_recent_paths", 10)
         }
-        
+    
+    def _save_config_to_file(self, config, show_message=False):
+        """保存配置到文件（内部方法）"""
         try:
             with open(self.config_file, 'w', encoding='utf-8') as f:
                 json.dump(config, f, indent=2, ensure_ascii=False)
-            messagebox.showinfo("成功", "配置已保存")
+            if show_message:
+                messagebox.showinfo("成功", "配置已保存")
         except Exception as e:
-            messagebox.showerror("错误", f"保存配置失败: {str(e)}")
+            error_msg = f"保存配置失败: {str(e)}"
+            if show_message:
+                messagebox.showerror("错误", error_msg)
+            else:
+                print(f"自动保存配置失败: {str(e)}")
+    
+    def save_config(self):
+        """保存配置"""
+        config = self._get_current_config()
+        self._save_config_to_file(config, show_message=True)
+    
+    def auto_save_config(self):
+        """自动保存配置（不显示提示）"""
+        config = self._get_current_config()
+        self._save_config_to_file(config, show_message=False)
 
 def main():
     root = tk.Tk()

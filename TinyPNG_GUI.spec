@@ -1,12 +1,16 @@
 # -*- mode: python ; coding: utf-8 -*-
+from PyInstaller.utils.hooks import collect_data_files
+
+datas = []
+datas += collect_data_files('certifi')
 
 
 a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
-    datas=[],
-    hiddenimports=['tinify', 'click'],
+    datas=datas,
+    hiddenimports=['tinify', 'click', 'certifi', 'requests', 'urllib3'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
